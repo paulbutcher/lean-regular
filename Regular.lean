@@ -1,3 +1,12 @@
--- This module serves as the root of the `Regular` library.
--- Import modules here that should be built as part of the library.
-import Regular.Basic
+/-
+Copyright (c) 2026 Paul Butcher. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+-/
+module
+
+public import Regular.Regex
+public import Regular.Deriv
+public import Regular.States
+public import Regular.Decide
+public import Regular.Combinators
+public import Regular.Shape

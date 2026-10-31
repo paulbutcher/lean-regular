@@ -1,6 +1,0 @@
-name = "regular"
-version = "0.1.0"
-defaultTargets = ["Regular"]
-
-[[lean_lib]]
-name = "Regular"

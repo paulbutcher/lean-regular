@@ -1,0 +1,13 @@
+name = "test"
+defaultTargets = ["RegularTests"]
+testDriver = "RegularTests"
+
+[leanOptions]
+warningAsError = true
+
+[[require]]
+name = "regular"
+path = ".."
+
+[[lean_lib]]
+name = "RegularTests"
