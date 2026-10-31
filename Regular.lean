@@ -10,3 +10,5 @@ public import Regular.States
 public import Regular.Decide
 public import Regular.Combinators
 public import Regular.Shape
+public import Regular.Indexed
+public import Regular.Diagnose
