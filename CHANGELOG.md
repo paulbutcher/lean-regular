@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.0] - 2026-10-31
+
+* `Diagnosis.unexpected` and `Diagnosis.incomplete` carry the grammar symbols that could come next, so `Diagnosis` now takes the symbol type
+
 ## [0.1.0] - 2026-10-31
 
 * Regular grammars with interleave, `nonEmpty`, and block-permutation `allOf`, with a proven check, run by `decide`, that every word of a shape is in a grammar, and a shortest counterexample when it is not

@@ -200,30 +200,99 @@ end Regex
 
 open Regex Inclusion
 
-/-- How a word falls short of a grammar. -/
-inductive Diagnosis where
+/-- How a word falls short of a grammar. Where it does, `expected` holds the symbols that could
+come next, each once. -/
+inductive Diagnosis (σ : Type u) where
   | accepted
   /-- The letter at this position cannot follow the ones before it. -/
-  | unexpected (i : Nat)
+  | unexpected (i : Nat) (expected : List σ)
   /-- Every letter can follow the ones before it, but the word ends too soon. -/
-  | incomplete
+  | incomplete (expected : List σ)
   deriving DecidableEq, Repr
 
 variable {α : Type v} {σ : Type u} [DecidableEq σ]
 
+def dedup {β : Type u} [DecidableEq β] : List β → List β
+  | [] => []
+  | a :: l => if a ∈ dedup l then dedup l else a :: dedup l
+
+theorem mem_dedup {β : Type u} [DecidableEq β] {a : β} {l : List β} : a ∈ dedup l ↔ a ∈ l := by
+  induction l with
+  | nil => simp [dedup]
+  | cons b l ih =>
+    simp only [dedup]
+    split <;> rename_i h
+    · rw [ih, List.mem_cons]
+      exact ⟨.inr, fun h' => h'.elim (fun e => by subst e; exact ih.1 h) id⟩
+    · rw [List.mem_cons, ih, List.mem_cons]
+
+theorem nodup_dedup {β : Type u} [DecidableEq β] (l : List β) : (dedup l).Nodup := by
+  induction l with
+  | nil => simp [dedup]
+  | cons b l ih =>
+    simp only [dedup]
+    split
+    · exact ih
+    · exact List.nodup_cons.2 ⟨‹_›, ih⟩
+
+/-- The symbols that can start a word of one of `ys`, leaving out any that nothing can follow. -/
+def expected (ys : List (Regex σ)) : List σ :=
+  (ys.flatMap fun y =>
+    (factors y).filterMap fun p => if isVoid p.2 then none else some p.1) |> dedup
+
 /-- Locates where `w` goes wrong for `g`, typically a counterexample. -/
-def diagnose (m : α → σ → Bool) (g : Regex σ) (w : List α) : Diagnosis := diagnose.go m 0 [g] w
+def diagnose (m : α → σ → Bool) (g : Regex σ) (w : List α) : Diagnosis σ :=
+  diagnose.go m 0 [g] w
 where
-  go (m : α → σ → Bool) (i : Nat) (ys : List (Regex σ)) : List α → Diagnosis
-    | [] => if ys.any nullable then .accepted else .incomplete
+  go (m : α → σ → Bool) (i : Nat) (ys : List (Regex σ)) : List α → Diagnosis σ
+    | [] => if ys.any nullable then .accepted else .incomplete (expected ys)
     | a :: w =>
       let ys' := derivSet m a ys
-      if ys'.all isVoid then .unexpected i else go m (i + 1) ys' w
+      if ys'.all isVoid then .unexpected i (expected ys) else go m (i + 1) ys' w
 
 /-- Some word of `g` starts with `u`. -/
 def Viable (m : α → σ → Bool) (g : Regex σ) (u : List α) : Prop := ∃ v, Matches m g (u ++ v)
 
 variable {m : α → σ → Bool} {g : Regex σ}
+
+theorem mem_expected {ys : List (Regex σ)} {s : σ} :
+    s ∈ expected ys ↔ ∃ y ∈ ys, ∃ p ∈ factors y, isVoid p.2 = false ∧ p.1 = s := by
+  simp only [expected, mem_dedup, List.mem_flatMap, List.mem_filterMap]
+  refine exists_congr fun y => and_congr_right fun _ => exists_congr fun p =>
+    and_congr_right fun _ => ?_
+  cases isVoid p.2 <;> simp
+
+theorem nodup_expected (ys : List (Regex σ)) : (expected ys).Nodup := nodup_dedup _
+
+/-- `expected ys` is exact: a letter has a derivative of `ys` that is not void just when it
+matches one of the symbols. -/
+theorem continues_iff_expected {ys : List (Regex σ)} {a : α} :
+    (∃ y ∈ derivSet m a ys, isVoid y = false) ↔ ∃ s ∈ expected ys, m a s = true := by
+  simp only [mem_derivSet, mem_expected]
+  constructor
+  · rintro ⟨y, ⟨x, hx, hy⟩, hv⟩
+    obtain ⟨p, hp, hm, rfl⟩ := mem_deriv_iff_factors.1 hy
+    exact ⟨p.1, ⟨x, hx, p, hp, hv, rfl⟩, hm⟩
+  · rintro ⟨_, ⟨x, hx, p, hp, hv, rfl⟩, hm⟩
+    exact ⟨p.2, ⟨x, hx, mem_deriv_iff_factors.2 ⟨p, hp, hm, rfl⟩⟩, hv⟩
+
+omit [DecidableEq σ] in
+theorem derivWord_concat {ys : List (Regex σ)} {u : List α} {a : α} [DecidableEq σ] :
+    derivWord m ys (u ++ [a]) = derivSet m a (derivWord m ys u) := by
+  simp [derivWord, List.foldl_append]
+
+/-- Given that every symbol matches some letter, a prefix is viable just when its derivative is
+not void. -/
+theorem viable_iff (hm : ∀ s, ∃ a, m a s = true) {u : List α} :
+    Viable m g u ↔ ∃ y ∈ derivWord m [g] u, isVoid y = false := by
+  constructor
+  · rintro ⟨v, hv⟩
+    obtain ⟨y, hy, hyv⟩ := matches_derivWord.2 ⟨g, List.mem_singleton_self g, hv⟩
+    exact ⟨y, hy, Bool.eq_false_iff.2 fun h => (isVoid_sound y).1 h v hyv⟩
+  · rintro ⟨y, hy, hv⟩
+    obtain ⟨v, hyv⟩ := (isVoid_complete hm y).1 hv
+    obtain ⟨_, hg, h⟩ := matches_derivWord.1 ⟨y, hy, hyv⟩
+    exact ⟨v, List.mem_singleton.1 hg ▸ h⟩
 
 omit [DecidableEq σ] in
 private theorem viable_of_rep {ys : List (Regex σ)} {p : List α}
@@ -234,13 +303,16 @@ private theorem viable_of_rep {ys : List (Regex σ)} {p : List α}
   exact ⟨v, (hrep v).1 ⟨y, hy, hyv⟩⟩
 
 private theorem go_spec {i : Nat} {ys : List (Regex σ)} {p w : List α}
+    (hys : ys = derivWord m [g] p)
     (hrep : ∀ v, (∃ y ∈ ys, Matches m y v) ↔ Matches m g (p ++ v)) :
     (diagnose.go m i ys w = .accepted ↔ Matches m g (p ++ w)) ∧
-    (∀ j, diagnose.go m i ys w = .unexpected j → ∃ k, j = i + k ∧ k < w.length ∧
+    (∀ j e, diagnose.go m i ys w = .unexpected j e → ∃ k, j = i + k ∧ k < w.length ∧
       ¬Viable m g (p ++ w.take (k + 1)) ∧
-      ((∀ s, ∃ a, m a s = true) → ∀ k' < k, Viable m g (p ++ w.take (k' + 1)))) ∧
-    (diagnose.go m i ys w = .incomplete → ¬Matches m g (p ++ w) ∧
-      ((∀ s, ∃ a, m a s = true) → ∀ k < w.length, Viable m g (p ++ w.take (k + 1)))) := by
+      ((∀ s, ∃ a, m a s = true) → ∀ k' < k, Viable m g (p ++ w.take (k' + 1))) ∧
+      e = expected (derivWord m [g] (p ++ w.take k))) ∧
+    (∀ e, diagnose.go m i ys w = .incomplete e → ¬Matches m g (p ++ w) ∧
+      ((∀ s, ∃ a, m a s = true) → ∀ k < w.length, Viable m g (p ++ w.take (k + 1))) ∧
+      e = expected (derivWord m [g] (p ++ w))) := by
   induction w generalizing i ys p with
   | nil =>
     have hacc : (ys.any nullable = true) ↔ Matches m g (p ++ []) := by
@@ -250,8 +322,9 @@ private theorem go_spec {i : Nat} {ys : List (Regex σ)} {p w : List α}
     simp only [diagnose.go]
     split <;> rename_i h
     · exact ⟨by simpa using hacc.1 h, by simp, by simp⟩
-    · exact ⟨by simpa using fun h' => h (hacc.2 h'), by simp,
-        fun _ => ⟨fun h' => h (hacc.2 h'), by simp⟩⟩
+    · refine ⟨by simpa using fun h' => h (hacc.2 h'), by simp, fun e he => ?_⟩
+      cases he
+      exact ⟨fun h' => h (hacc.2 h'), by simp, by simp [hys]⟩
   | cons a w ih =>
     have hrep' : ∀ v, (∃ y ∈ derivSet m a ys, Matches m y v) ↔ Matches m g ((p ++ [a]) ++ v) := by
       intro v
@@ -269,42 +342,64 @@ private theorem go_spec {i : Nat} {ys : List (Regex σ)} {p w : List α}
     simp only [diagnose.go]
     split <;> rename_i h
     · refine ⟨⟨nofun, fun hw => absurd ⟨w, by simpa using hw⟩ (hdead h)⟩, ?_, nofun⟩
-      intro j hj
+      intro j e hj
       cases hj
-      exact ⟨0, rfl, by simp, by simpa using hdead h, by simp⟩
-    · obtain ⟨iha, ihu, ihi⟩ := ih (i := i + 1) hrep'
+      exact ⟨0, rfl, by simp, by simpa using hdead h, by simp, by simp [hys]⟩
+    · obtain ⟨iha, ihu, ihi⟩ := ih (i := i + 1) (by rw [hys, derivWord_concat]) hrep'
       have hlive := fun hm => viable_of_rep hrep' hm (by simpa using h)
-      refine ⟨by simpa using iha, fun j hj => ?_, fun hj => ?_⟩
-      · obtain ⟨k, rfl, hk, hnv, hv⟩ := ihu j hj
-        refine ⟨k + 1, by omega, by simp; omega, by simpa using hnv, fun hm k' hk' => ?_⟩
+      refine ⟨by simpa using iha, fun j e hj => ?_, fun e hj => ?_⟩
+      · obtain ⟨k, rfl, hk, hnv, hv, rfl⟩ := ihu j e hj
+        refine ⟨k + 1, by omega, by simp; omega, by simpa using hnv, fun hm k' hk' => ?_,
+          by simp⟩
         cases k' with
         | zero => simpa using hlive hm
         | succ k' => simpa using hv hm k' (by omega)
-      · obtain ⟨hnm, hv⟩ := ihi hj
-        refine ⟨by simpa using hnm, fun hm k hk => ?_⟩
+      · obtain ⟨hnm, hv, rfl⟩ := ihi e hj
+        refine ⟨by simpa using hnm, fun hm k hk => ?_, by simp⟩
         cases k with
         | zero => simpa using hlive hm
         | succ k => simpa using hv hm k (by simpa using hk)
 
 theorem diagnose_accepted_iff {w : List α} : diagnose m g w = .accepted ↔ Matches m g w := by
-  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp)
+  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp [derivWord]) (by simp)
   simpa [diagnose] using this.1
 
 /-- The prefix ending at position `i` is not the start of any word of `g`, and, given that every
-symbol matches some letter, each shorter nonempty prefix is. -/
-theorem diagnose_unexpected {w : List α} {i : Nat} (h : diagnose m g w = .unexpected i) :
+symbol matches some letter, each shorter nonempty prefix is. `e` lists, each once, exactly the
+symbols that letters able to follow the first `i` letters match. -/
+theorem diagnose_unexpected {w : List α} {i : Nat} {e : List σ}
+    (h : diagnose m g w = .unexpected i e) :
     i < w.length ∧ ¬Viable m g (w.take (i + 1)) ∧
-      ((∀ s, ∃ a, m a s = true) → ∀ k < i, Viable m g (w.take (k + 1))) := by
-  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp)
-  obtain ⟨k, rfl, hk, hnv, hv⟩ := this.2.1 i h
-  exact ⟨by simpa using hk, by simpa using hnv, by simpa using hv⟩
+      ((∀ s, ∃ a, m a s = true) → ∀ k < i, Viable m g (w.take (k + 1))) ∧
+      e.Nodup ∧
+      (∀ a, (∃ y ∈ derivWord m [g] (w.take i ++ [a]), isVoid y = false) ↔
+        ∃ s ∈ e, m a s = true) ∧
+      ((∀ s, ∃ a, m a s = true) → ∀ a, Viable m g (w.take i ++ [a]) ↔ ∃ s ∈ e, m a s = true) := by
+  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp [derivWord]) (by simp)
+  obtain ⟨k, rfl, hk, hnv, hv, rfl⟩ := this.2.1 i e h
+  simp only [Nat.zero_add, List.nil_append] at hk hnv hv ⊢
+  have hexact : ∀ a, (∃ y ∈ derivWord m [g] (w.take k ++ [a]), isVoid y = false) ↔
+      ∃ s ∈ expected (derivWord m [g] (w.take k)), m a s = true := fun a => by
+    rw [derivWord_concat]
+    exact continues_iff_expected
+  exact ⟨hk, hnv, hv, nodup_expected _, hexact, fun hm a => (viable_iff hm).trans (hexact a)⟩
 
 /-- `w` is not a word of `g`, and, given that every symbol matches some letter, each of its
-nonempty prefixes is the start of one. -/
-theorem diagnose_incomplete {w : List α} (h : diagnose m g w = .incomplete) :
+nonempty prefixes is the start of one. `e` lists, each once, exactly the symbols that letters
+able to follow `w` match. -/
+theorem diagnose_incomplete {w : List α} {e : List σ} (h : diagnose m g w = .incomplete e) :
     ¬Matches m g w ∧
-      ((∀ s, ∃ a, m a s = true) → ∀ k < w.length, Viable m g (w.take (k + 1))) := by
-  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp)
-  simpa using this.2.2 h
+      ((∀ s, ∃ a, m a s = true) → ∀ k < w.length, Viable m g (w.take (k + 1))) ∧
+      e.Nodup ∧
+      (∀ a, (∃ y ∈ derivWord m [g] (w ++ [a]), isVoid y = false) ↔ ∃ s ∈ e, m a s = true) ∧
+      ((∀ s, ∃ a, m a s = true) → ∀ a, Viable m g (w ++ [a]) ↔ ∃ s ∈ e, m a s = true) := by
+  have := go_spec (m := m) (g := g) (i := 0) (ys := [g]) (p := []) (w := w) (by simp [derivWord]) (by simp)
+  obtain ⟨hnm, hv, rfl⟩ := this.2.2 e h
+  simp only [List.nil_append] at hnm hv
+  have hexact : ∀ a, (∃ y ∈ derivWord m [g] (w ++ [a]), isVoid y = false) ↔
+      ∃ s ∈ expected (derivWord m [g] w), m a s = true := fun a => by
+    rw [derivWord_concat]
+    exact continues_iff_expected
+  exact ⟨hnm, hv, nodup_expected _, hexact, fun hm a => (viable_iff hm).trans (hexact a)⟩
 
 end Regular

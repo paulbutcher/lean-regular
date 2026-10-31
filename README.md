@@ -68,7 +68,7 @@ The procedure explores the product of the shape's partial derivatives (Antimirov
 A counterexample is a word, a list of letters, which says what sequence is wrong but not where it came from. Two functions turn it into a location:
 
 - `Shape.indexed s` tags each letter of `s` with the position of the `sym` that produced it, numbered from 0 left to right, and checking it with `fun p s => m p.2 s` gives the same answer as checking `s` (`Shape.accepts_indexed_iff`). Its counterexample is then a list of positions in the shape: for `seq [one .caption, many .tr, one .thead]` against a `table`, `[(0, .caption), (2, .thead)]`. Indexed shapes never repeat, so check one only after the plain check has failed.
-- `diagnose m g w` says how `w` goes wrong: `.unexpected i` when the letter at position `i` cannot follow the ones before it, such as a `thead` after a `tr`, and `.incomplete` when every letter can but the word stops too soon, such as a table with no rows.
+- `diagnose m g w` says how `w` goes wrong: `.unexpected i expected` when the letter at position `i` cannot follow the ones before it, such as a `thead` after a `tr`, and `.incomplete expected` when every letter can but the word stops too soon, such as a table with no rows. `expected` lists the grammar symbols that could have come next, each once, for an error such as "expected a length or `auto`".
 
 ## Performance in a consumer
 
@@ -87,7 +87,7 @@ A single check is fast, but an elaborator that runs one per element or per decla
 - `matches_rep`, `matches_atLeast`, `matches_plus`, `matches_pow`, and `matches_upTo` give the counts each repetition admits; `matches_sepBy1`, `matches_seq`, `matches_oneOf`, `matches_opt`, and `Shape.matches_word` the rest.
 - `Shape.accepts_kinds` and `Shape.accepts_collapse`: each coarse shape contains the one it was made from, so `Accepts.of_coarse` transfers acceptance back.
 - `Shape.matches_indexed`, `Shape.accepts_indexed_iff`, and `Shape.counterexample_indexed`: an indexed shape has the same words as its source, each letter tagged, and its counterexample with the tags removed is one to the source.
-- `diagnose_accepted_iff`, `diagnose_unexpected`, and `diagnose_incomplete`: `.unexpected i` means no word of the grammar starts with the first `i + 1` letters, and `.incomplete` that the word is not in the grammar. Given that every symbol matches some letter, each shorter prefix in the first case, and every prefix in the second, does start a word of the grammar.
+- `diagnose_accepted_iff`, `diagnose_unexpected`, and `diagnose_incomplete`: `.unexpected i` means no word of the grammar starts with the first `i + 1` letters, and `.incomplete` that the word is not in the grammar. Given that every symbol matches some letter, each shorter prefix in the first case, and every prefix in the second, does start a word of the grammar. In both, `expected` is exact: a letter can continue the prefix accepted so far just when it matches one of its symbols, so a symbol that nothing can follow is left out.
 - `matches_cons_iff` and `nullable_iff`, the derivative property the procedure rests on, and `deriv_mem_states` with `length_states_le`, the finiteness that bounds its fuel.
 
 ## License

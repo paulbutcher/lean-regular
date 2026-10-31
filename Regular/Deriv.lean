@@ -312,6 +312,105 @@ theorem mem_deriv_allOf {a : α} {qs : List (Regex σ)} {d : Regex σ} :
       ∃ d' ∈ deriv m a r, d = mkCat d' (.allOf (l₁ ++ l₂)) := by
   simp [deriv, mem_derivAll]
 
+mutual
+/-- Antimirov's linear factors: each pair is a symbol that a word of `r` may start with, and an
+expression for the rest of such a word. -/
+def factors : Regex σ → List (σ × Regex σ)
+  | .empty | .eps => []
+  | .sym s => [(s, .eps)]
+  | .cat r s =>
+    (factors r).map (fun p => (p.1, mkCat p.2 s)) ++ if nullable r then factors s else []
+  | .alt r s => factors r ++ factors s
+  | .star r => (factors r).map fun p => (p.1, mkCat p.2 (.star r))
+  | .interleave r s =>
+    (factors r).map (fun p => (p.1, mkInter p.2 s)) ++ (factors s).map fun p => (p.1, mkInter r p.2)
+  | .nonEmpty r => factors r
+  | .allOf rs => factorsAll [] rs
+
+/-- The factors of `allOf (pre ++ post)` whose first block is a member of `post`. -/
+def factorsAll (pre : List (Regex σ)) : List (Regex σ) → List (σ × Regex σ)
+  | [] => []
+  | r :: post =>
+    (factors r).map (fun p => (p.1, mkCat p.2 (.allOf (pre ++ post)))) ++ factorsAll (pre ++ [r]) post
+end
+
+theorem mem_factorsAll {pre post : List (Regex σ)} {p : σ × Regex σ} :
+    p ∈ factorsAll pre post ↔ ∃ l₁ r l₂, post = l₁ ++ r :: l₂ ∧
+      ∃ q ∈ factors r, p = (q.1, mkCat q.2 (.allOf (pre ++ l₁ ++ l₂))) := by
+  induction post generalizing pre with
+  | nil => simp [factorsAll]
+  | cons r post ih =>
+    simp only [factorsAll, List.mem_append, List.mem_map, ih]
+    constructor
+    · rintro (⟨q, hq, rfl⟩ | ⟨l₁, r', l₂, rfl, q, hq, rfl⟩)
+      · exact ⟨[], r, post, rfl, q, hq, by simp⟩
+      · exact ⟨r :: l₁, r', l₂, rfl, q, hq, by simp⟩
+    · rintro ⟨l₁, r', l₂, h, q, hq, rfl⟩
+      cases l₁ with
+      | nil =>
+        simp only [List.nil_append, List.cons.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact .inl ⟨q, hq, by simp⟩
+      | cons x l₁ =>
+        simp only [List.cons_append, List.cons.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact .inr ⟨l₁, r', l₂, rfl, q, hq, by simp⟩
+
+/-- The derivatives by a letter are the continuations of the factors whose symbol it matches. -/
+theorem mem_deriv_iff_factors {a : α} {d : Regex σ} :
+    d ∈ deriv m a r ↔ ∃ p ∈ factors r, m a p.1 = true ∧ p.2 = d := by
+  induction r using ind generalizing d with
+  | empty | eps => simp [deriv, factors]
+  | sym s =>
+    simp only [deriv, factors, List.mem_singleton, exists_eq_left]
+    by_cases h : m a s = true
+    · simp only [h, ite_true, List.mem_singleton, true_and]
+      exact eq_comm
+    · simp [h]
+  | cat r s ihr ihs =>
+    simp only [deriv, factors, List.mem_append, List.mem_map, List.mem_ite_nil_right, ihr, ihs]
+    constructor
+    · rintro (⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩ | ⟨hn, p, hp, hm, rfl⟩)
+      · exact ⟨_, .inl ⟨p, hp, rfl⟩, hm, rfl⟩
+      · exact ⟨p, .inr ⟨hn, hp⟩, hm, rfl⟩
+    · rintro ⟨_, ⟨p, hp, rfl⟩ | ⟨hn, hp⟩, hm, rfl⟩
+      · exact .inl ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩
+      · exact .inr ⟨hn, _, hp, hm, rfl⟩
+  | alt r s ihr ihs =>
+    simp only [deriv, factors, List.mem_append, ihr, ihs]
+    constructor
+    · rintro (⟨p, hp, h⟩ | ⟨p, hp, h⟩)
+      · exact ⟨p, .inl hp, h⟩
+      · exact ⟨p, .inr hp, h⟩
+    · rintro ⟨p, hp | hp, h⟩
+      · exact .inl ⟨p, hp, h⟩
+      · exact .inr ⟨p, hp, h⟩
+  | star r ih =>
+    simp only [deriv, factors, List.mem_map, ih]
+    constructor
+    · rintro ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩
+      exact ⟨_, ⟨p, hp, rfl⟩, hm, rfl⟩
+    · rintro ⟨_, ⟨p, hp, rfl⟩, hm, rfl⟩
+      exact ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩
+  | interleave r s ihr ihs =>
+    simp only [deriv, factors, List.mem_append, List.mem_map, ihr, ihs]
+    constructor
+    · rintro (⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩ | ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩)
+      · exact ⟨_, .inl ⟨p, hp, rfl⟩, hm, rfl⟩
+      · exact ⟨_, .inr ⟨p, hp, rfl⟩, hm, rfl⟩
+    · rintro ⟨_, ⟨p, hp, rfl⟩ | ⟨p, hp, rfl⟩, hm, rfl⟩
+      · exact .inl ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩
+      · exact .inr ⟨_, ⟨p, hp, hm, rfl⟩, rfl⟩
+  | nonEmpty r ih => simpa [deriv, factors] using ih
+  | allOf rs ih =>
+    simp only [mem_deriv_allOf, factors, mem_factorsAll, List.nil_append]
+    constructor
+    · rintro ⟨l₁, r, l₂, rfl, d', hd', rfl⟩
+      obtain ⟨p, hp, hm, rfl⟩ := (ih r (by simp)).1 hd'
+      exact ⟨_, ⟨l₁, r, l₂, rfl, p, hp, rfl⟩, hm, rfl⟩
+    · rintro ⟨_, ⟨l₁, r, l₂, rfl, p, hp, rfl⟩, hm, rfl⟩
+      exact ⟨l₁, r, l₂, rfl, p.2, (ih r (by simp)).2 ⟨p, hp, hm, rfl⟩, rfl⟩
+
 theorem matches_cons_iff {a : α} : Matches m r (a :: w) ↔ ∃ d ∈ deriv m a r, Matches m d w := by
   induction r using ind generalizing w with
   | empty => simp [deriv, not_matches_empty]
