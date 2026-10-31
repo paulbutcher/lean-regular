@@ -63,12 +63,22 @@ The procedure explores the product of the shape's partial derivatives (Antimirov
 
 `lake run bench` times `decide` and `decide +kernel` on CSS's `font`, `background`, and `grid-template`, and on HTML's `table`, each against shapes containing lists of unknown length. Plain `decide` takes from 20 to 215 ms on these, `background` being the slowest, and `decide +kernel` about half that.
 
+## Performance in a consumer
+
+A single check is fast, but an elaborator that runs one per element or per declaration runs hundreds per file, and they add up. Measured with 300 checks in a file, elaborated one at a time, each costs about 4 ms against a single literal child, plus about 3 ms for each further child, whatever the grammar: an element with ten literal children costs 30 ms even when its content model is `flow*`. Reusing an existing proof costs about 1 ms. Parallel elaboration, on by default, recovers less than a factor of two. To keep a file of markup or styles quick to elaborate:
+
+- Check a coarser shape first, and fall back to the exact one only when that fails, using `Accepts.of_coarse`. `Shape.kinds` forgets order and count, which loses nothing for a grammar such as `flow*`; `Shape.collapse` keeps order but loosens repeated runs, for grammars such as `table`. The fallback costs more only on the rare element that fails, and it finds the true counterexample for the error message.
+- Cache by the coarse shape. Distinct child lists rarely repeat exactly, but they coarsen to a few shapes per grammar, so proving each pair once as an auxiliary theorem and reusing it makes most checks cost 1 ms. CSS declarations repeat their exact shapes often enough to cache without coarsening.
+- Leave to the types what they already enforce. Where children are typed by category and widen by coercion, only elements whose content models are structured, such as `table`, `dl`, or `ruby`, need a check.
+- Prefer `decide +kernel`, which proves the same proposition in about half the time. `native_decide` is faster still, but trusts the compiler, which defeats the point of a verified check.
+
 ## Formal verification
 
 - `accepts_iff`: `accepts m g s = true` exactly when `Accepts m g s`, where both languages are given by `Matches`, an inductive definition independent of the procedure.
 - `counterexample_eq_none_iff` and `counterexample_spec`: `counterexample` returns `none` exactly when `Accepts` holds, and any word it returns matches the shape and not the grammar.
 - `matches_allOf`: `allOf rs` matches exactly the concatenations of one word of each member, in some permutation of `rs`. `matches_someOf`: `someOf rs` matches exactly the nonempty concatenations of words of distinct members, in any order.
 - `matches_rep`, `matches_atLeast`, `matches_plus`, `matches_pow`, and `matches_upTo` give the counts each repetition admits; `matches_sepBy1`, `matches_seq`, `matches_oneOf`, `matches_opt`, and `Shape.matches_word` the rest.
+- `Shape.accepts_kinds` and `Shape.accepts_collapse`: each coarse shape contains the one it was made from, so `Accepts.of_coarse` transfers acceptance back.
 - `matches_cons_iff` and `nullable_iff`, the derivative property the procedure rests on, and `deriv_mem_states` with `length_states_le`, the finiteness that bounds its fuel.
 
 ## License

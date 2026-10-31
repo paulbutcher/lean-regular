@@ -6,3 +6,4 @@ module
 
 import RegularTests.Decide
 import RegularTests.Readme
+import RegularTests.Coarse
