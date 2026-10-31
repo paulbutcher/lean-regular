@@ -490,6 +490,132 @@ theorem check_accept (h : check m g s = .accept) : Accepts m g s := by
   · cases h
   · exact explore_accept (start_inv (by rename_i hb; simpa using hb)) h
 
+
+/-- `x` is a derivative of the shape `s` along the word `u`. -/
+inductive Along (s : Regex α) : List α → Regex α → Prop
+  | nil : Along s [] s
+  | snoc {u : List α} {a : α} {x x' : Regex α} : Along s u x → x' ∈ deriv (· == ·) a x →
+      Along s (u ++ [a]) x'
+
+theorem along_inv {u : List α} {x : Regex α} (h : Along s u x) : (u = [] ∧ x = s) ∨
+    ∃ u' a x₀, u = u' ++ [a] ∧ Along s u' x₀ ∧ x ∈ deriv (· == ·) a x₀ := by
+  cases h with
+  | nil => exact .inl ⟨rfl, rfl⟩
+  | snoc h hd => exact .inr ⟨_, _, _, rfl, h, hd⟩
+
+theorem exists_along {u v : List α} {x : Regex α} (hx : Along s u x)
+    (h : Matches (· == ·) x v) : ∃ x', Along s (u ++ v) x' ∧ nullable x' = true := by
+  induction v generalizing u x with
+  | nil => exact ⟨x, by simpa using hx, nullable_iff.2 h⟩
+  | cons a v ih =>
+    obtain ⟨d, hd, hdv⟩ := matches_cons_iff.1 h
+    simpa using ih (hx.snoc hd) hdv
+
+/-- The grammar states after `u`. -/
+def derivWord (m : α → σ → Bool) (ys : List (Regex σ)) (u : List α) : List (Regex σ) :=
+  u.foldl (fun ys a => derivSet m a ys) ys
+
+omit [DecidableEq α] in
+theorem matches_derivWord {ys : List (Regex σ)} {u v : List α} :
+    (∃ y ∈ derivWord m ys u, Matches m y v) ↔ ∃ y ∈ ys, Matches m y (u ++ v) := by
+  induction u generalizing ys with
+  | nil => simp [derivWord]
+  | cons a u ih =>
+    simp only [derivWord, List.foldl_cons] at ih ⊢
+    rw [ih]
+    simp only [mem_derivSet, List.cons_append]
+    constructor
+    · rintro ⟨y, ⟨x, hx, hy⟩, hyv⟩
+      exact ⟨x, hx, matches_cons_iff.2 ⟨y, hy, hyv⟩⟩
+    · rintro ⟨x, hx, hxv⟩
+      obtain ⟨y, hy, hyv⟩ := matches_cons_iff.1 hxv
+      exact ⟨y, ⟨x, hx, hy⟩, hyv⟩
+
+/-- Every pair of a shape state reachable along a word of length at most `k` and the grammar
+states after that word is represented, and the frontier is all at depth `k`. -/
+structure Level (m : α → σ → Bool) (g : Regex σ) (s : Regex α) (k : Nat)
+    (old fr : List (Node α σ)) : Prop where
+  trace : ∀ n ∈ fr, n.trace.length = k
+  reach : ∀ u x, u.length ≤ k → (∀ a ∈ u, a ∈ s.letters.eraseDups) → Along s u x →
+    ∃ v ∈ fr ++ old, v.shape = x ∧ ∀ y, y ∈ v.grammar ↔ y ∈ derivWord m [g] u
+
+theorem level_start : Level m g s 0 [] [⟨s, [g], []⟩] where
+  trace := by simp
+  reach u x hlen _ hx := by
+    rcases along_inv hx with ⟨rfl, rfl⟩ | ⟨u', a, _, rfl, _, _⟩
+    · exact ⟨⟨_, [g], []⟩, by simp, rfl, by simp [derivWord]⟩
+    · simp at hlen
+
+theorem Level.step {k : Nat} {old fr new : List (Node α σ)}
+    (hI : Inv m g s s.letters.eraseDups old fr) (hL : Level m g s k old fr)
+    (h : insertAll (fr ++ old) [] (fr.flatMap (succs m s.letters.eraseDups)) = .ok new) :
+    Level m g s (k + 1) (fr ++ old) new := by
+  obtain ⟨added, rfl, hadded, hcs, _⟩ := insertAll_ok h
+  simp only [List.append_nil] at hcs ⊢
+  refine ⟨fun n hn => ?_, fun u x hlen hls hx => ?_⟩
+  · obtain ⟨f, hf, hc⟩ := List.mem_flatMap.1 (hadded n hn)
+    obtain ⟨a, _, x, _, rfl⟩ := mem_succs.1 hc
+    simp [hL.trace f hf]
+  · by_cases hk : u.length ≤ k
+    · obtain ⟨v, hv, h⟩ := hL.reach u x hk hls hx
+      exact ⟨v, by simp_all, h⟩
+    rcases along_inv hx with ⟨rfl, rfl⟩ | ⟨u', a, x₀, rfl, hx₀, hd⟩
+    · simp at hk
+    have hu' : u'.length ≤ k := by simp at hlen; omega
+    obtain ⟨v, hv, hshape, hgr⟩ := hL.reach u' x₀ hu' (fun b hb => hls b (by simp [hb])) hx₀
+    have hc : (⟨x, derivSet m a v.grammar, a :: v.trace⟩ : Node α σ) ∈
+        succs m s.letters.eraseDups v :=
+      mem_succs.2 ⟨a, hls a (by simp), x, hshape ▸ hd, rfl⟩
+    have hrep : Represented ⟨x, derivSet m a v.grammar, a :: v.trace⟩ (added ++ (fr ++ old)) := by
+      rcases List.mem_append.1 hv with hv | hv
+      · exact (hcs _ (List.mem_flatMap.2 ⟨v, hv, hc⟩)).2
+      · exact (hI.closed v hv _ hc).mono fun v hv => by simp_all
+    obtain ⟨v', hv', hshape', hset⟩ := hrep
+    refine ⟨v', hv', hshape', fun y => ?_⟩
+    rw [mem_of_setEq hset]
+    simp only [derivWord, List.foldl_append, List.foldl_cons, List.foldl_nil] at hgr ⊢
+    simp only [mem_derivSet, hgr]
+
+theorem explore_reject_shortest {k fuel : Nat} {old fr : List (Node α σ)} {w : List α}
+    (hI : Inv m g s s.letters.eraseDups old fr) (hL : Level m g s k old fr)
+    (h : explore m s.letters.eraseDups fuel old fr = .reject w) {w' : List α}
+    (hs : Matches (· == ·) s w') (hg : ¬Matches m g w') : w.length ≤ w'.length := by
+  induction fuel generalizing k old fr with
+  | zero => simp [explore] at h
+  | succ n ih =>
+    cases fr with
+    | nil => simp [explore] at h
+    | cons f fs =>
+      simp only [explore] at h
+      split at h
+      · rename_i w'' hw
+        cases h
+        obtain ⟨c, hc, _, rfl⟩ := insertAll_error hw
+        obtain ⟨n, hn, hc⟩ := List.mem_flatMap.1 hc
+        obtain ⟨a, _, x, _, rfl⟩ := mem_succs.1 hc
+        simp only [List.length_reverse, List.length_cons, hL.trace n hn]
+        refine Nat.succ_le_of_lt (Nat.lt_of_not_le fun hle => ?_)
+        obtain ⟨x, hx, hnull⟩ := exists_along (u := []) .nil hs
+        have hls : ∀ a ∈ w', a ∈ s.letters.eraseDups :=
+          fun a ha => List.mem_eraseDups.2 (mem_letters_of_matches hs a ha)
+        obtain ⟨v, hv, hshape, hgr⟩ := hL.reach w' x hle hls (by simpa using hx)
+        have hbad : isBad v = true := by
+          simp only [isBad, hshape, hnull, Bool.true_and, Bool.not_eq_true',
+            List.any_eq_false]
+          intro y hy hny
+          obtain ⟨y', hy', hm⟩ := matches_derivWord.1 ⟨y, (hgr y).1 hy, nullable_iff.1 hny⟩
+          exact hg (by simpa [List.mem_singleton.1 hy'] using hm)
+        simp [(hI.valid v hv).2] at hbad
+      · exact ih (hI.step ‹_›) (hL.step hI ‹_›) h
+
+theorem check_reject_shortest {w w' : List α} (h : check m g s = .reject w)
+    (hs : Matches (· == ·) s w') (hg : ¬Matches m g w') : w.length ≤ w'.length := by
+  unfold check at h
+  dsimp only at h
+  split at h
+  · cases h
+    simp
+  · exact explore_reject_shortest (start_inv (by rename_i hb; simpa using hb)) level_start h hs hg
 end Inclusion
 
 variable {m : α → σ → Bool} {g : Regex σ} {s : Regex α}
@@ -520,6 +646,15 @@ theorem counterexample_spec {w : List α} (h : counterexample m g s = some w) :
   split at h
   · cases h
     exact check_reject ‹_›
+  · cases h
+
+/-- No word of the shape outside the grammar is shorter than the counterexample. -/
+theorem counterexample_shortest {w w' : List α} (h : counterexample m g s = some w)
+    (hs : Matches (· == ·) s w') (hg : ¬Matches m g w') : w.length ≤ w'.length := by
+  unfold counterexample at h
+  split at h
+  · cases h
+    exact check_reject_shortest ‹_› hs hg
   · cases h
 
 instance : Decidable (Accepts m g s) := decidable_of_iff _ accepts_iff

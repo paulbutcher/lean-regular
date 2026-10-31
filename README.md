@@ -82,7 +82,7 @@ A single check is fast, but an elaborator that runs one per element or per decla
 ## Formal verification
 
 - `accepts_iff`: `accepts m g s = true` exactly when `Accepts m g s`, where both languages are given by `Matches`, an inductive definition independent of the procedure.
-- `counterexample_eq_none_iff` and `counterexample_spec`: `counterexample` returns `none` exactly when `Accepts` holds, and any word it returns matches the shape and not the grammar.
+- `counterexample_eq_none_iff` and `counterexample_spec`: `counterexample` returns `none` exactly when `Accepts` holds, and any word it returns matches the shape and not the grammar. `counterexample_shortest`: no word of the shape outside the grammar is shorter than the one it returns.
 - `matches_allOf`: `allOf rs` matches exactly the concatenations of one word of each member, in some permutation of `rs`. `matches_someOf`: `someOf rs` matches exactly the nonempty concatenations of words of distinct members, in any order.
 - `matches_rep`, `matches_atLeast`, `matches_plus`, `matches_pow`, and `matches_upTo` give the counts each repetition admits; `matches_sepBy1`, `matches_seq`, `matches_oneOf`, `matches_opt`, and `Shape.matches_word` the rest.
 - `Shape.accepts_kinds` and `Shape.accepts_collapse`: each coarse shape contains the one it was made from, so `Accepts.of_coarse` transfers acceptance back.
