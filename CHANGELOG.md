@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.1] - 2026-11-01
+
+* `accepts` and `counterexample` check a shape built by `cat`, `alt`, and `star` in time linear in its length, so a run of 100 optional letters takes 15 ms by `decide +kernel` rather than 34 s
+
 ## [0.2.0] - 2026-10-31
 
 * `Diagnosis.unexpected` and `Diagnosis.incomplete` carry the grammar symbols that could come next, so `Diagnosis` now takes the symbol type

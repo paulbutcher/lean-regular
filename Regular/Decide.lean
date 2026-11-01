@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 -/
 module
 
+public import Regular.Combinators
 public import Regular.States
 
 @[expose] public section
@@ -167,18 +168,6 @@ end Inclusion
 open Inclusion
 
 variable {α : Type v} {σ : Type u} [DecidableEq α] [DecidableEq σ]
-
-/-- Whether every word of the shape `s` is in the language of the grammar `g`. -/
-def accepts (m : α → σ → Bool) (g : Regex σ) (s : Regex α) : Bool :=
-  match check m g s with
-  | .accept => true
-  | _ => false
-
-/-- A shortest word of the shape `s` that is not in the language of the grammar `g`, if any. -/
-def counterexample (m : α → σ → Bool) (g : Regex σ) (s : Regex α) : Option (List α) :=
-  match check m g s with
-  | .reject w => some w
-  | _ => none
 
 namespace Inclusion
 
@@ -618,35 +607,393 @@ theorem check_reject_shortest {w w' : List α} (h : check m g s = .reject w)
   · exact explore_reject_shortest (start_inv (by rename_i hb; simpa using hb)) level_start h hs hg
 end Inclusion
 
+/-! A check without a search, for a shape built by `cat`, `alt`, and `star` alone. It carries
+each set of grammar states through the shape's parts in turn, so a run of `n` parts costs `n`
+steps, where the derivatives of a run such as `(a?)ⁿ` number `n` from each state, `n²` in all. -/
+
+namespace Residuals
+
+open Inclusion
+
+/-- The grammar states `y` hold between them exactly what may follow `w` after `x`. -/
+def Follows (m : α → σ → Bool) (x : List (Regex σ)) (w : List α) (y : List (Regex σ)) : Prop :=
+  ∀ v, (∃ r ∈ y, Matches m r v) ↔ ∃ r ∈ x, Matches m r (w ++ v)
+
+/-- `xs` with each of `ys` that it does not already hold as a set. -/
+def insertSets : List (List (Regex σ)) → List (List (Regex σ)) → List (List (Regex σ))
+  | xs, [] => xs
+  | xs, y :: ys => insertSets (if xs.any (setEq · y) then xs else y :: xs) ys
+
+/-- Adds what `step` gives until it adds nothing new, closing `xs` under `step`. -/
+def star (step : List (List (Regex σ)) → Option (List (List (Regex σ)))) :
+    Nat → List (List (Regex σ)) → Option (List (List (Regex σ)))
+  | 0, _ => none
+  | n + 1, xs =>
+    match step xs with
+    | none => none
+    | some ys =>
+      if ys.all fun y => xs.any (setEq · y) then some xs else star step n (insertSets xs ys)
+
+/-! The kernel reduces lazily, so the sets that one part of a shape passes to the next would be
+an unevaluated term that grows with every part, and the kernel's caches compare such terms in
+time proportional to their size. Copying them, matching each state to its constructor, passes
+an evaluated term instead. -/
+
+/-- `xs` reversed onto `acc`. -/
+def copyStates : List (Regex σ) → List (Regex σ) → List (Regex σ)
+  | acc, [] => acc
+  | acc, .empty :: xs => copyStates (.empty :: acc) xs
+  | acc, .eps :: xs => copyStates (.eps :: acc) xs
+  | acc, .sym a :: xs => copyStates (.sym a :: acc) xs
+  | acc, .cat r s :: xs => copyStates (.cat r s :: acc) xs
+  | acc, .alt r s :: xs => copyStates (.alt r s :: acc) xs
+  | acc, .star r :: xs => copyStates (.star r :: acc) xs
+  | acc, .interleave r s :: xs => copyStates (.interleave r s :: acc) xs
+  | acc, .nonEmpty r :: xs => copyStates (.nonEmpty r :: acc) xs
+  | acc, .allOf rs :: xs => copyStates (.allOf rs :: acc) xs
+
+/-- `xs` reversed onto `acc`, each set copied by `copyStates`. -/
+def copySets : List (List (Regex σ)) → List (List (Regex σ)) → List (List (Regex σ))
+  | acc, [] => acc
+  | acc, x :: xs =>
+    match copyStates [] x with
+    | [] => copySets ([] :: acc) xs
+    | y :: ys => copySets ((y :: ys) :: acc) xs
+
+/-- The sets of grammar states after a word of `s` from one of `xs`, or `none` if `s` uses
+`interleave`, `nonEmpty`, or `allOf`, or `star` runs out of fuel. -/
+def after (m : α → σ → Bool) (fuel : Nat) :
+    Regex α → List (List (Regex σ)) → Option (List (List (Regex σ)))
+  | .empty, _ => some []
+  | .eps, xs => some xs
+  | .sym a, xs => some (insertSets [] (xs.map (derivSet m a)))
+  | .cat r s, xs =>
+    match after m fuel r xs with
+    | some ys =>
+      match copySets [] ys with
+      | [] => after m fuel s []
+      | z :: zs => after m fuel s (z :: zs)
+    | none => none
+  | .alt r s, xs =>
+    match after m fuel r xs, after m fuel s xs with
+    | some ys, some zs => some (insertSets ys zs)
+    | _, _ => none
+  | .star r, xs => star (after m fuel r) fuel xs
+  | .interleave .., _ | .nonEmpty _, _ | .allOf _, _ => none
+
+/-- Each round of `star` but the last adds a set of grammar states, and there are at most this
+many; were it to run out, `accepts` would fall back to `check`. -/
+def fuel (g : Regex σ) : Nat := (1 <<< (g.bound + 1)) + 1
+
+variable {m : α → σ → Bool}
+
+/-- `ys` are, as sets, the grammar states after the words of `s` from each of `xs`. -/
+structure Spec (m : α → σ → Bool) (s : Regex α) (xs ys : List (List (Regex σ))) : Prop where
+  sound : ∀ y ∈ ys, ∃ x ∈ xs, ∃ w, Matches (· == ·) s w ∧ Follows m x w y
+  complete : ∀ x ∈ xs, ∀ w, Matches (· == ·) s w → ∃ y ∈ ys, Follows m x w y
+
+omit [DecidableEq α] [DecidableEq σ] in
+theorem Follows.nil (x : List (Regex σ)) : Follows m x [] x := fun _ => Iff.rfl
+
+omit [DecidableEq α] [DecidableEq σ] in
+theorem Follows.append {x y z : List (Regex σ)} {u v : List α} (h₁ : Follows m x u y)
+    (h₂ : Follows m y v z) : Follows m x (u ++ v) z := fun t => by
+  rw [h₂ t, h₁ (v ++ t), List.append_assoc]
+
+omit [DecidableEq α] in
+theorem Follows.congr {x y z : List (Regex σ)} {w : List α} (h : Follows m x w y)
+    (he : setEq z y = true) : Follows m x w z := fun t => by
+  rw [← h t]
+  exact exists_congr fun r => and_congr_left fun _ => mem_of_setEq he
+
+omit [DecidableEq α] in
+theorem follows_derivSet (x : List (Regex σ)) (a : α) : Follows m x [a] (derivSet m a x) := by
+  intro v
+  simp only [mem_derivSet, List.singleton_append]
+  constructor
+  · rintro ⟨y, ⟨r, hr, hy⟩, hyv⟩
+    exact ⟨r, hr, matches_cons_iff.2 ⟨y, hy, hyv⟩⟩
+  · rintro ⟨r, hr, hrv⟩
+    obtain ⟨y, hy, hyv⟩ := matches_cons_iff.1 hrv
+    exact ⟨y, ⟨r, hr, hy⟩, hyv⟩
+
+omit [DecidableEq α] in
+theorem mem_insertSets {xs ys : List (List (Regex σ))} {z : List (Regex σ)}
+    (h : z ∈ insertSets xs ys) : z ∈ xs ∨ z ∈ ys := by
+  induction ys generalizing xs with
+  | nil => exact .inl h
+  | cons y ys ih =>
+    simp only [insertSets] at h
+    rcases ih h with h | h
+    · split at h
+      · exact .inl h
+      · rcases List.mem_cons.1 h with rfl | h
+        · simp
+        · exact .inl h
+    · simp [h]
+
+omit [DecidableEq α] in
+theorem subset_insertSets {xs ys : List (List (Regex σ))} {z : List (Regex σ)} (h : z ∈ xs) :
+    z ∈ insertSets xs ys := by
+  induction ys generalizing xs with
+  | nil => exact h
+  | cons y ys ih =>
+    simp only [insertSets]
+    split
+    · exact ih h
+    · exact ih (List.mem_cons_of_mem _ h)
+
+omit [DecidableEq α] in
+theorem setEq_trans {a b c : List (Regex σ)} (h₁ : setEq a b = true) (h₂ : setEq b c = true) :
+    setEq a c = true := by
+  simp only [setEq, Bool.and_eq_true, List.all_eq_true, List.contains_iff_mem] at h₁ h₂ ⊢
+  exact ⟨fun x hx => h₂.1 x (h₁.1 x hx), fun x hx => h₁.2 x (h₂.2 x hx)⟩
+
+omit [DecidableEq α] in
+theorem represented_insertSets {xs ys : List (List (Regex σ))} {z : List (Regex σ)}
+    (h : z ∈ xs ∨ z ∈ ys) : ∃ y ∈ insertSets xs ys, setEq y z = true := by
+  induction ys generalizing xs z with
+  | nil => exact ⟨z, by simpa [insertSets] using h, setEq_self z⟩
+  | cons y ys ih =>
+    simp only [insertSets]
+    rcases h with h | h
+    · refine ih (.inl ?_)
+      split
+      · exact h
+      · exact List.mem_cons_of_mem _ h
+    · rcases List.mem_cons.1 h with rfl | h
+      · split
+        · rename_i hany
+          obtain ⟨x, hx, he⟩ := List.any_eq_true.1 hany
+          obtain ⟨y, hy, he'⟩ := ih (.inl hx)
+          exact ⟨y, hy, setEq_trans he' he⟩
+        · exact ih (.inl (List.mem_cons_self ..))
+      · exact ih (.inr h)
+
+omit [DecidableEq α] [DecidableEq σ] in
+theorem copyStates_eq (acc xs : List (Regex σ)) : copyStates acc xs = xs.reverse ++ acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x xs ih => cases x <;> simp [copyStates, ih]
+
+omit [DecidableEq α] [DecidableEq σ] in
+theorem copySets_eq (acc xs : List (List (Regex σ))) :
+    copySets acc xs = (xs.map List.reverse).reverse ++ acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [copySets, copyStates_eq, List.append_nil]
+    split <;> rename_i heq <;> simp [ih, ← heq]
+
+omit [DecidableEq α] [DecidableEq σ] in
+theorem Follows.reverse {x y : List (Regex σ)} {w : List α} (h : Follows m x.reverse w y) :
+    Follows m x w y := fun t => by
+  rw [h t]
+  simp
+
+omit [DecidableEq σ] in
+theorem Spec.of_copySets {s : Regex α} {xs ys : List (List (Regex σ))}
+    (h : Spec m s (copySets [] xs) ys) : Spec m s xs ys := by
+  simp only [copySets_eq, List.append_nil] at h
+  constructor
+  · intro y hy
+    obtain ⟨_, hx', w, hw, hxy⟩ := h.sound y hy
+    obtain ⟨x, hx, rfl⟩ := List.mem_map.1 (List.mem_reverse.1 hx')
+    exact ⟨x, hx, w, hw, hxy.reverse⟩
+  · intro x hx w hw
+    obtain ⟨y, hy, hxy⟩ := h.complete x.reverse (by simpa using hx) w hw
+    exact ⟨y, hy, hxy.reverse⟩
+
+theorem star_spec {r : Regex α} {step : List (List (Regex σ)) → Option (List (List (Regex σ)))}
+    (hstep : ∀ xs ys, step xs = some ys → Spec m r xs ys) {n : Nat}
+    {xs₀ xs ys : List (List (Regex σ))}
+    (hsound : ∀ y ∈ xs, ∃ x ∈ xs₀, ∃ w, Matches (· == ·) (.star r) w ∧ Follows m x w y)
+    (hsub : ∀ x ∈ xs₀, x ∈ xs) (h : star step n xs = some ys) : Spec m (.star r) xs₀ ys := by
+  induction n generalizing xs with
+  | zero => simp [star] at h
+  | succ n ih =>
+    simp only [star] at h
+    split at h
+    · cases h
+    rename_i zs hz
+    have hS := hstep xs zs hz
+    split at h
+    · have hys : xs = ys := Option.some.inj h
+      subst hys
+      rename_i hall
+      refine ⟨hsound, fun x hx w hw => ?_⟩
+      obtain ⟨ws, hws, rfl⟩ := matches_star_iff_flatten.1 hw
+      suffices ∀ x ∈ xs, ∃ y ∈ xs, Follows m x ws.flatten y from this x (hsub x hx)
+      clear hw
+      induction ws with
+      | nil => exact fun x hx => ⟨x, hx, .nil x⟩
+      | cons v ws ihws =>
+        intro x hx
+        obtain ⟨z, hz, hxz⟩ := hS.complete x hx v (hws v (by simp))
+        obtain ⟨y, hy, he⟩ := List.any_eq_true.1 (List.all_eq_true.1 hall z hz)
+        obtain ⟨y', hy', hyy'⟩ := ihws (fun v hv => hws v (by simp [hv])) y hy
+        exact ⟨y', hy', by simpa using (hxz.congr he).append hyy'⟩
+    · refine ih (fun y hy => ?_) (fun x hx => subset_insertSets (hsub x hx)) h
+      rcases mem_insertSets hy with hy | hy
+      · exact hsound y hy
+      · obtain ⟨x', hx', v, hv, hx'y⟩ := hS.sound y hy
+        obtain ⟨x, hx, u, hu, hxx'⟩ := hsound x' hx'
+        refine ⟨x, hx, u ++ v, ?_, hxx'.append hx'y⟩
+        obtain ⟨ws, hws, rfl⟩ := matches_star_iff_flatten.1 hu
+        refine matches_star_iff_flatten.2 ⟨ws ++ [v], fun t ht => ?_, by simp⟩
+        rcases List.mem_append.1 ht with ht | ht
+        · exact hws t ht
+        · exact (List.mem_singleton.1 ht) ▸ hv
+
+theorem after_spec {fuel : Nat} {s : Regex α} {xs ys : List (List (Regex σ))}
+    (h : after m fuel s xs = some ys) : Spec m s xs ys := by
+  induction s using Regex.ind generalizing xs ys with
+  | empty =>
+    cases h
+    exact ⟨nofun, fun _ _ _ hw => absurd hw not_matches_empty⟩
+  | eps =>
+    cases h
+    refine ⟨fun y hy => ⟨y, hy, [], .eps, .nil y⟩, fun x hx w hw => ?_⟩
+    rw [matches_eps_iff.1 hw]
+    exact ⟨x, hx, .nil x⟩
+  | sym a =>
+    cases h
+    constructor
+    · intro y hy
+      rcases mem_insertSets hy with hy | hy
+      · cases hy
+      · obtain ⟨x, hx, rfl⟩ := List.mem_map.1 hy
+        exact ⟨x, hx, [a], .sym (by simp), follows_derivSet x a⟩
+    · intro x hx w hw
+      obtain ⟨b, rfl, hb⟩ := matches_sym_iff.1 hw
+      rw [beq_iff_eq.1 hb]
+      obtain ⟨y, hy, he⟩ := represented_insertSets (xs := [])
+        (.inr (List.mem_map_of_mem (f := derivSet m a) hx))
+      exact ⟨y, hy, (follows_derivSet x a).congr he⟩
+  | cat r s ihr ihs =>
+    simp only [after] at h
+    obtain ⟨zs, hz, hs⟩ : ∃ zs, after m fuel r xs = some zs ∧ Spec m s zs ys := by
+      split at h
+      · rename_i zs hz
+        refine ⟨zs, hz, Spec.of_copySets ?_⟩
+        split at h <;> rename_i heq <;> (rw [heq]; exact ihs h)
+      · cases h
+    have hr := ihr hz
+    constructor
+    · intro y hy
+      obtain ⟨z, hz, v, hv, hzy⟩ := hs.sound y hy
+      obtain ⟨x, hx, u, hu, hxz⟩ := hr.sound z hz
+      exact ⟨x, hx, u ++ v, .cat hu hv, hxz.append hzy⟩
+    · intro x hx w hw
+      obtain ⟨u, v, rfl, hu, hv⟩ := matches_cat_iff.1 hw
+      obtain ⟨z, hz, hxz⟩ := hr.complete x hx u hu
+      obtain ⟨y, hy, hzy⟩ := hs.complete z hz v hv
+      exact ⟨y, hy, hxz.append hzy⟩
+  | alt r s ihr ihs =>
+    simp only [after] at h
+    split at h
+    · cases h
+      rename_i ys zs hy hz
+      have hr := ihr hy
+      have hs := ihs hz
+      constructor
+      · intro y hy
+        rcases mem_insertSets hy with hy | hy
+        · obtain ⟨x, hx, w, hw, hxy⟩ := hr.sound y hy
+          exact ⟨x, hx, w, .altLeft hw, hxy⟩
+        · obtain ⟨x, hx, w, hw, hxy⟩ := hs.sound y hy
+          exact ⟨x, hx, w, .altRight hw, hxy⟩
+      · intro x hx w hw
+        have : ∃ z, (z ∈ ys ∨ z ∈ zs) ∧ Follows m x w z := by
+          rcases matches_alt_iff.1 hw with hw | hw
+          · obtain ⟨z, hz, hxz⟩ := hr.complete x hx w hw
+            exact ⟨z, .inl hz, hxz⟩
+          · obtain ⟨z, hz, hxz⟩ := hs.complete x hx w hw
+            exact ⟨z, .inr hz, hxz⟩
+        obtain ⟨z, hz, hxz⟩ := this
+        obtain ⟨y, hy, he⟩ := represented_insertSets hz
+        exact ⟨y, hy, hxz.congr he⟩
+    · cases h
+  | star r ih =>
+    exact star_spec (fun _ _ h => ih h)
+      (fun y hy => ⟨y, hy, [], .starNil, .nil y⟩) (fun _ hx => hx) h
+  | interleave | nonEmpty | allOf => cases h
+
+theorem accepts_of_after {g : Regex σ} {s : Regex α} {fuel : Nat} {ys : List (List (Regex σ))}
+    (h : after m fuel s [[g]] = some ys) :
+    (ys.all fun y => y.any nullable) = true ↔ Accepts m g s := by
+  have hS := after_spec h
+  simp only [List.all_eq_true, List.any_eq_true]
+  constructor
+  · intro hall w hw
+    obtain ⟨y, hy, hgy⟩ := hS.complete [g] (by simp) w hw
+    obtain ⟨r, hr, hn⟩ := hall y hy
+    simpa using (hgy []).1 ⟨r, hr, nullable_iff.1 hn⟩
+  · intro hacc y hy
+    obtain ⟨x, hx, w, hw, hxy⟩ := hS.sound y hy
+    rw [List.mem_singleton.1 hx] at hxy
+    obtain ⟨r, hr, hrn⟩ := (hxy []).2 ⟨g, by simp, by simpa using hacc w hw⟩
+    exact ⟨r, hr, nullable_iff.2 hrn⟩
+
+end Residuals
+
+/-- Whether every word of the shape `s` is in the language of the grammar `g`. -/
+def accepts (m : α → σ → Bool) (g : Regex σ) (s : Regex α) : Bool :=
+  match Residuals.after m (Residuals.fuel g) s [[g]] with
+  | some ys => ys.all fun y => y.any nullable
+  | none =>
+    match check m g s with
+    | .accept => true
+    | _ => false
+
+/-- A shortest word of the shape `s` that is not in the language of the grammar `g`, if any. -/
+def counterexample (m : α → σ → Bool) (g : Regex σ) (s : Regex α) : Option (List α) :=
+  if accepts m g s then none
+  else
+    match check m g s with
+    | .reject w => some w
+    | _ => none
+
 variable {m : α → σ → Bool} {g : Regex σ} {s : Regex α}
 
 theorem accepts_iff : accepts m g s = true ↔ Accepts m g s := by
   unfold accepts
   split
-  · exact ⟨fun _ => check_accept ‹_›, fun _ => rfl⟩
-  · refine ⟨nofun, fun h => ?_⟩
-    cases hc : check m g s with
-    | accept => contradiction
-    | reject w =>
-      obtain ⟨hs, hg⟩ := check_reject hc
-      exact absurd (h w hs) hg
-    | outOfFuel => exact absurd hc check_ne_outOfFuel
+  · exact Residuals.accepts_of_after ‹_›
+  · split
+    · exact ⟨fun _ => check_accept ‹_›, fun _ => rfl⟩
+    · refine ⟨nofun, fun h => ?_⟩
+      cases hc : check m g s with
+      | accept => contradiction
+      | reject w =>
+        obtain ⟨hs, hg⟩ := check_reject hc
+        exact absurd (h w hs) hg
+      | outOfFuel => exact absurd hc check_ne_outOfFuel
 
 theorem counterexample_eq_none_iff : counterexample m g s = none ↔ Accepts m g s := by
   rw [← accepts_iff]
-  unfold counterexample accepts
-  cases hc : check m g s with
-  | accept => simp
-  | reject => simp
-  | outOfFuel => exact absurd hc check_ne_outOfFuel
+  unfold counterexample
+  split
+  · simp_all
+  · rename_i ha
+    simp only [ha, Bool.false_eq_true, iff_false]
+    split
+    · simp
+    · rename_i hc
+      cases hc' : check m g s with
+      | accept => exact absurd (accepts_iff.2 (check_accept hc')) ha
+      | reject => exact absurd hc' (hc _)
+      | outOfFuel => exact absurd hc' check_ne_outOfFuel
 
 theorem counterexample_spec {w : List α} (h : counterexample m g s = some w) :
     Matches (· == ·) s w ∧ ¬Matches m g w := by
   unfold counterexample at h
   split at h
   · cases h
-    exact check_reject ‹_›
-  · cases h
+  · split at h
+    · cases h
+      exact check_reject ‹_›
+    · cases h
 
 /-- No word of the shape outside the grammar is shorter than the counterexample. -/
 theorem counterexample_shortest {w w' : List α} (h : counterexample m g s = some w)
@@ -654,8 +1001,10 @@ theorem counterexample_shortest {w w' : List α} (h : counterexample m g s = som
   unfold counterexample at h
   split at h
   · cases h
-    exact check_reject_shortest ‹_› hs hg
-  · cases h
+  · split at h
+    · cases h
+      exact check_reject_shortest ‹_› hs hg
+    · cases h
 
 instance : Decidable (Accepts m g s) := decidable_of_iff _ accepts_iff
 

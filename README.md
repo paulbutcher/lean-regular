@@ -59,9 +59,9 @@ example : ¬Accepts widens grammar (seq [Shape.one .length, Shape.many .color]) 
 
 ## Deciding
 
-The procedure explores the product of the shape's partial derivatives (Antimirov's) with sets of the grammar's, breadth first, so a counterexample it finds is a shortest one. Everything `decide` evaluates is structurally recursive; the search runs on fuel bounded by a proven count of the reachable states. Its worst case is exponential in the size of the grammar, as any such check must be, but grammars the size of CSS shorthands decide well under a second.
+A shape built by `cat`, `alt`, and `star` alone, as a list of children or tokens is, is checked part by part: each part takes the sets of grammar states that may follow the parts before it to those that may follow it, so the check costs one step per part, and a run of 1,000 optional letters decides in about 0.1 s by `decide +kernel`. Any other shape, and the search for a counterexample once that check has failed, explores the product of the shape's partial derivatives (Antimirov's) with sets of the grammar's, breadth first, so a counterexample it finds is a shortest one. Everything `decide` evaluates is structurally recursive; the search runs on fuel bounded by a proven count of the reachable states. Its worst case is exponential in the size of the grammar, as any such check must be, but grammars the size of CSS shorthands decide well under a second.
 
-`lake run bench` times `decide` and `decide +kernel` on CSS's `font`, `background`, and `grid-template`, and on HTML's `table`, each against shapes containing lists of unknown length. Plain `decide` takes from 20 to 215 ms on these, `background` being the slowest, and `decide +kernel` about half that.
+`lake run bench` times `decide` and `decide +kernel` on CSS's `font`, `background`, and `grid-template`, and on HTML's `table`, each against shapes containing lists of unknown length. Plain `decide` takes from 20 to 130 ms on these, `background` being the slowest, and `decide +kernel` about half that.
 
 ## Explaining a rejection
 

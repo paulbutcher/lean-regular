@@ -67,6 +67,12 @@ example : Accepts widens (.star (.cat A B)) (.star (w [.a, .b])) := by decide
 example : Accepts widens (.nonEmpty (.star A)) (Shape.many1 .a) := by decide
 #guard counterexample widens (.nonEmpty (.star A)) (Shape.many .a) = some []
 
+-- A shape that interleaves is decided by the search over its derivatives.
+example : Accepts widens (.interleave A (.star B)) (.interleave (Shape.one .a) (Shape.many .b)) :=
+  by decide
+example : ¬Accepts widens (.interleave A (plus B)) (.interleave (Shape.one .a) (Shape.many .b)) :=
+  by decide
+
 /-- A counterexample really is one, so a consumer can report it as the offending input. -/
 example : counterexample widens (.allOf [.cat A B, C]) (w [.a, .c, .b]) = some [.a, .c, .b] ∧
     ¬Matches widens (.allOf [.cat A B, C]) [.a, .c, .b] :=
