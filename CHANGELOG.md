@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.0] - 2026-11-24
+
+* Breaking: requires Lean v4.36.0, so consumers must move to that toolchain
+
 ## [0.2.1] - 2026-11-01
 
 * `accepts` and `counterexample` check a shape built by `cat`, `alt`, and `star` in time linear in its length, so a run of 100 optional letters takes 15 ms by `decide +kernel` rather than 34 s
